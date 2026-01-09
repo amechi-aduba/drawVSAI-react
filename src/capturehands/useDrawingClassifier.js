@@ -11,7 +11,7 @@ const CATEGORIES = [
 const LABELS_URL = `/model_js/labels.json?v=${Date.now()}`;
 const MODEL_URL = `/model_js/model.json?v=${Date.now()}`;
 
-const EMA_ALPHA = 0.5;
+const EMA_ALPHA = 0.8;
 const SHOW_MODEL_VIEW = true;
 
 export function useDrawingClassifier({ onCorrect } = {}) {
@@ -112,13 +112,13 @@ export function useDrawingClassifier({ onCorrect } = {}) {
     const data = ctx.getImageData(0, 0, W, H).data;
 
     let minX = W, minY = H, maxX = -1, maxY = -1;
-    let inkPixels = 0;
+    let hasInk = false;
 
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        const i = (y * W + x) * 4;
-        if (data[i + 3] > 10) {
-          inkPixels++;
+        const alpha = data[(y * W + x) * 4 + 3];
+        if (alpha > 20) { 
+          hasInk = true;
           if (x < minX) minX = x;
           if (y < minY) minY = y;
           if (x > maxX) maxX = x;
@@ -127,128 +127,76 @@ export function useDrawingClassifier({ onCorrect } = {}) {
       }
     }
 
-    if (inkPixels < 10 || maxX < 0) {
+    if (!hasInk) {
       return { xImg: tf.zeros([1, 28, 28, 1], "float32"), inkRatio: 0 };
     }
 
-    const bw = maxX - minX + 1;
-    const bh = maxY - minY + 1;
-    const size = Math.max(bw, bh);
-    const pad = Math.max(10, Math.round(size * 0.25));
-    let cropSize = Math.min(Math.max(60, size + 2 * pad), W, H);
+  
+    const bWidth = maxX - minX + 1;
+    const bHeight = maxY - minY + 1;
+    const maxDim = Math.max(bWidth, bHeight) * 1.15; 
 
-    const cx = minX + bw / 2;
-    const cy = minY + bh / 2;
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = 28;
+    tmpCanvas.height = 28;
+    const tmpCtx = tmpCanvas.getContext("2d");
 
-    let cropX = Math.round(cx - cropSize / 2);
-    let cropY = Math.round(cy - cropSize / 2);
+    tmpCtx.fillStyle = "white";
+    tmpCtx.fillRect(0, 0, 28, 28);
 
-    cropX = Math.max(0, Math.min(W - cropSize, cropX));
-    cropY = Math.max(0, Math.min(H - cropSize, cropY));
+    const scale = 28 / maxDim;
+    const drawW = bWidth * scale;
+    const drawH = bHeight * scale;
+    const drawX = (28 - drawW) / 2;
+    const drawY = (28 - drawH) / 2;
 
-    const mid = document.createElement("canvas");
-    mid.width = 112;
-    mid.height = 112;
-    const midCtx = mid.getContext("2d", { willReadFrequently: true });
+    tmpCtx.imageSmoothingEnabled = true;
+    tmpCtx.imageSmoothingQuality = 'high';
+    tmpCtx.drawImage(canvasEl, minX, minY, bWidth, bHeight, drawX, drawY, drawW, drawH);
 
-    midCtx.imageSmoothingEnabled = true;
-    midCtx.fillStyle = "#fff";
-    midCtx.fillRect(0, 0, 112, 112);
-    midCtx.drawImage(canvasEl, cropX, cropY, cropSize, cropSize, 0, 0, 112, 112);
-
-    const midData = midCtx.getImageData(0, 0, 112, 112).data;
-    const binaryArr = new Uint8ClampedArray(112 * 112);
-
-    for (let i = 0; i < 112 * 112; i++) {
-      const j = i * 4;
-      const gray = (midData[j] + midData[j + 1] + midData[j + 2]) / 3;
-      binaryArr[i] = gray < 128 ? 0 : 255;
-    }
-
-    const binCanvas = document.createElement("canvas");
-    binCanvas.width = 112;
-    binCanvas.height = 112;
-    const binCtx = binCanvas.getContext("2d");
-    const binImageData = binCtx.createImageData(112, 112);
-
-    for (let i = 0; i < 112 * 112; i++) {
-      const val = binaryArr[i];
-      binImageData.data[i * 4] = val;
-      binImageData.data[i * 4 + 1] = val;
-      binImageData.data[i * 4 + 2] = val;
-      binImageData.data[i * 4 + 3] = 255;
-    }
-    binCtx.putImageData(binImageData, 0, 0);
-
-    const dilC = document.createElement("canvas");
-    dilC.width = 112;
-    dilC.height = 112;
-    const dilCtx = dilC.getContext("2d");
-    dilCtx.imageSmoothingEnabled = false;
-    dilCtx.fillStyle = "#fff";
-    dilCtx.fillRect(0, 0, 112, 112);
-
-    // Single-pass dilation with R=1 (lighter touch to preserve details)
-    const R = 1;
-    dilCtx.globalAlpha = 0.7;
-    for (let dy = -R; dy <= R; dy++) {
-      for (let dx = -R; dx <= R; dx++) {
-        if (dx * dx + dy * dy <= R * R) {
-          dilCtx.drawImage(binCanvas, dx, dy);
-        }
-      }
-    }
-    dilCtx.globalAlpha = 1.0;
-
-    const outC = document.createElement("canvas");
-    outC.width = 28;
-    outC.height = 28;
-    const outCtx = outC.getContext("2d");
-
-    outCtx.imageSmoothingEnabled = true;
-    outCtx.fillStyle = "#fff";
-    outCtx.fillRect(0, 0, 28, 28);
-    outCtx.drawImage(dilC, 0, 0, 28, 28);
-
-    const img28 = outCtx.getImageData(0, 0, 28, 28).data;
-    const arr = new Float32Array(28 * 28);
-    let inkSum = 0;
+    const imgData = tmpCtx.getImageData(0, 0, 28, 28).data;
+    const floatArr = new Float32Array(28 * 28);
+    let inkCount = 0;
 
     for (let i = 0; i < 28 * 28; i++) {
-      const j = i * 4;
-      const gray = (img28[j] + img28[j + 1] + img28[j + 2]) / 3;
-      const binary = gray < 128 ? 1.0 : 0.0;
-      arr[i] = binary;
-      if (binary > 0.5) inkSum += 1;
-    }
+      const avg = (imgData[i * 4] + imgData[i * 4 + 1] + imgData[i * 4 + 2]) / 3;
+      
+      let val = 1.0 - (avg / 255.0);
 
-    // No final dilation - preserve fine details
-    
-    // Invert to match training data
-    for (let i = 0; i < arr.length; i++) {
-      arr[i] = 1.0 - arr[i];
-    }
-
-    if (SHOW_MODEL_VIEW) {
-      const previewData = outCtx.createImageData(28, 28);
-      for (let i = 0; i < 28 * 28; i++) {
-        const px = arr[i] * 255;
-        previewData.data[i * 4] = px;
-        previewData.data[i * 4 + 1] = px;
-        previewData.data[i * 4 + 2] = px;
-        previewData.data[i * 4 + 3] = 255;
+      if (val > 0.05) {
+        val = Math.min(1.0, val * 1.3); 
+        inkCount++;
+      } else {
+        val = 0;
       }
-      outCtx.putImageData(previewData, 0, 0);
-      outC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#fff;image-rendering:pixelated;";
-      document.body.appendChild(outC);
-      setTimeout(() => outC.remove(), 200);
+      floatArr[i] = val;
     }
+
+    // if (SHOW_MODEL_VIEW) {
+    //   let debugC = document.getElementById("model-debug-preview");
+    //   if (!debugC) {
+    //     debugC = document.createElement("canvas");
+    //     debugC.id = "model-debug-preview";
+    //     debugC.width = 28;
+    //     debugC.height = 28;
+    //     debugC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#000;image-rendering:pixelated;";
+    //     document.body.appendChild(debugC);
+    //   }
+    //   const dCtx = debugC.getContext("2d");
+    //   const dImgData = dCtx.createImageData(28, 28);
+    //   for (let i = 0; i < 28 * 28; i++) {
+    //     const p = floatArr[i] * 255;
+    //     dImgData.data[i * 4] = p; dImgData.data[i * 4 + 1] = p; dImgData.data[i * 4 + 2] = p; dImgData.data[i * 4 + 3] = 255;
+    //   }
+    //   dCtx.putImageData(dImgData, 0, 0);
+    // }
 
     return {
-      xImg: tf.tensor4d(arr, [1, 28, 28, 1], "float32"),
-      inkRatio: inkSum / (28 * 28),
+      xImg: tf.tensor4d(floatArr, [1, 28, 28, 1], "float32"),
+      inkRatio: inkCount / (28 * 28),
     };
   }
+
   const updateGuess = useCallback((canvasEl) => {
     const model = modelRef.current;
     if (!model || !canvasEl) return;
