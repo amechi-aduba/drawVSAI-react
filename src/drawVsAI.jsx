@@ -37,6 +37,7 @@ export default function DrawVsAI() {
     drawCanvasRef,
     landmarks: handData.landmarks,
     gesture: handData.gesture,
+    htr_on: false
   });
 
 

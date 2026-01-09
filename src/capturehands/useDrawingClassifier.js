@@ -188,32 +188,17 @@ export function useDrawingClassifier({ onCorrect } = {}) {
     dilCtx.fillStyle = "#fff";
     dilCtx.fillRect(0, 0, 112, 112);
 
-    let currentCanvas = binCanvas;
-
-    for (let pass = 0; pass < 2; pass++) {
-      const passC = document.createElement("canvas");
-      passC.width = 112;
-      passC.height = 112;
-      const passCtx = passC.getContext("2d");
-      passCtx.imageSmoothingEnabled = false;
-      passCtx.fillStyle = "#fff";
-      passCtx.fillRect(0, 0, 112, 112);
-
-      const R = 1;
-      passCtx.globalAlpha = 0.65;
-      for (let dy = -R; dy <= R; dy++) {
-        for (let dx = -R; dx <= R; dx++) {
-          if (dx * dx + dy * dy <= R * R) {
-            passCtx.drawImage(currentCanvas, dx, dy);
-          }
+    // Single-pass dilation with R=1 (lighter touch to preserve details)
+    const R = 1;
+    dilCtx.globalAlpha = 0.7;
+    for (let dy = -R; dy <= R; dy++) {
+      for (let dx = -R; dx <= R; dx++) {
+        if (dx * dx + dy * dy <= R * R) {
+          dilCtx.drawImage(binCanvas, dx, dy);
         }
       }
-      passCtx.globalAlpha = 1.0;
-
-      currentCanvas = passC;
     }
-
-    dilCtx.drawImage(currentCanvas, 0, 0);
+    dilCtx.globalAlpha = 1.0;
 
     const outC = document.createElement("canvas");
     outC.width = 28;
@@ -237,52 +222,33 @@ export function useDrawingClassifier({ onCorrect } = {}) {
       if (binary > 0.5) inkSum += 1;
     }
 
-    if (inkSum > 5) {
-      const temp = new Float32Array(arr);
-      for (let y = 0; y < 28; y++) {
-        for (let x = 0; x < 28; x++) {
-          const idx = y * 28 + x;
-          if (temp[idx] > 0.5) {
-            const neighbors = [
-              [y - 1, x], [y + 1, x],
-              [y, x - 1], [y, x + 1]
-            ];
-            for (const [ny, nx] of neighbors) {
-              if (ny >= 0 && ny < 28 && nx >= 0 && nx < 28) {
-                arr[ny * 28 + nx] = 1.0;
-              }
-            }
-          }
-        }
-      }
-      inkSum = arr.reduce((a, b) => a + b);
-    }
-
+    // No final dilation - preserve fine details
+    
+    // Invert to match training data
     for (let i = 0; i < arr.length; i++) {
       arr[i] = 1.0 - arr[i];
     }
 
-    // if (SHOW_MODEL_VIEW) {
-    //   const previewData = outCtx.createImageData(28, 28);
-    //   for (let i = 0; i < 28 * 28; i++) {
-    //     const px = arr[i] * 255;
-    //     previewData.data[i * 4] = px;
-    //     previewData.data[i * 4 + 1] = px;
-    //     previewData.data[i * 4 + 2] = px;
-    //     previewData.data[i * 4 + 3] = 255;
-    //   }
-    //   outCtx.putImageData(previewData, 0, 0);
-    //   outC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#fff;image-rendering:pixelated;";
-    //   document.body.appendChild(outC);
-    //   setTimeout(() => outC.remove(), 200);
-    // }
+    if (SHOW_MODEL_VIEW) {
+      const previewData = outCtx.createImageData(28, 28);
+      for (let i = 0; i < 28 * 28; i++) {
+        const px = arr[i] * 255;
+        previewData.data[i * 4] = px;
+        previewData.data[i * 4 + 1] = px;
+        previewData.data[i * 4 + 2] = px;
+        previewData.data[i * 4 + 3] = 255;
+      }
+      outCtx.putImageData(previewData, 0, 0);
+      outC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#fff;image-rendering:pixelated;";
+      document.body.appendChild(outC);
+      setTimeout(() => outC.remove(), 200);
+    }
 
     return {
       xImg: tf.tensor4d(arr, [1, 28, 28, 1], "float32"),
       inkRatio: inkSum / (28 * 28),
     };
   }
-
   const updateGuess = useCallback((canvasEl) => {
     const model = modelRef.current;
     if (!model || !canvasEl) return;

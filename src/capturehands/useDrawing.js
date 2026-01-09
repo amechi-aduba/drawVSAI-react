@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useDrawingClassifier } from './useDrawingClassifier';
 
-function useDrawing({ drawCanvasRef, landmarks, gesture }) {
+function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
   const clearOverlay = useCallback(() => {
     const canvas = drawCanvasRef.current;
     if (!canvas) return;
@@ -173,7 +173,7 @@ function useDrawing({ drawCanvasRef, landmarks, gesture }) {
 
     let x, y;
 
-    if (gesture === "PointerUp") {
+    if (gesture === "PointerUp" && htr_on) {
       // Use index finger tip (landmark 8)
       const rawTip = landmarks[8]; // [xPx, yPx, z]
       x = canvas.width - rawTip[0];  // Mirror horizontally
