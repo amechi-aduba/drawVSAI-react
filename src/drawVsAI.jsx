@@ -4,6 +4,7 @@ import React, { useRef, useState, useEffect } from "react";
 import Webcam from "react-webcam";
 import useHandTracking from "./capturehands/useHandTracking";
 import useDrawing from "./capturehands/useDrawing";
+import { useDrawingClassifier } from "./capturehands/useDrawingClassifier";
 
 export default function DrawVsAI() {
   const webcamRef = useRef(null);
@@ -16,6 +17,7 @@ export default function DrawVsAI() {
   const [currentMode, setCurrentMode] = useState("Idle"); // Idle / PointerUp / Erase
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+
 
   // Holds the "committed" landmarks + gesture after stability buffer
   const [handData, setHandData] = useState({
@@ -31,11 +33,14 @@ export default function DrawVsAI() {
   } = useHandTracking();
 
   // ─── Drawing hook ───
-  const { currentGuess, clearOverlay } = useDrawing({
+  const { currentGuess, clearOverlay, targetWord, score, correctGuess } = useDrawing({
     drawCanvasRef,
     landmarks: handData.landmarks,
     gesture: handData.gesture,
   });
+
+
+  const guessText = typeof currentGuess === "string" ? currentGuess : "AI GUESSES: …";
 
   // ─── Called once permission granted ───
   const handleUserMedia = () => {
@@ -65,6 +70,9 @@ export default function DrawVsAI() {
       videoEl.removeEventListener("loadeddata", onLoadedData);
     };
   }, [webcamRef.current]);
+
+  // ~~~ Game Classifier ~~~
+
 
   // ─── Stability buffer refs ───
   const lastRawGestureRef = useRef(null);
@@ -180,29 +188,17 @@ export default function DrawVsAI() {
 
         // Commit once seen ≥ 5 frames in a row
         if (stableCountRef.current >= STABILITY_THRESHOLD) {
-          if (
-            lm !== handData.landmarks ||
-            rawGesture !== handData.gesture
-          ) {
+          // ✅ Only update if gesture changed or landmarks existence changed
+          const hadLandmarks = handData.landmarks !== null;
+          const hasLandmarks = lm !== null;
+          const gestureChanged = rawGesture !== handData.gesture;
+          const landmarksStatusChanged = hadLandmarks !== hasLandmarks;
+          
+          if (gestureChanged || landmarksStatusChanged) {
             setHandData({ landmarks: lm, gesture: rawGesture });
           }
         }
 
-        // 5) Update handDetected based on presence of landmarks
-        if (handData.landmarks) {
-          setHandDetected(true);
-        } else {
-          setHandDetected(false);
-        }
-
-        // 6) Update overlay mode based on committed handData.gesture
-        if (handData.gesture === "PointerUp") {
-          setCurrentMode("PointerUp");
-        } else if (handData.gesture === "Erase") {
-          setCurrentMode("Erase");
-        } else {
-          setCurrentMode("Idle");
-        }
       } catch (e) {
         console.error("❌ detect error:", e);
         setError("Hand tracking failed. Reload & allow camera.");
@@ -213,7 +209,24 @@ export default function DrawVsAI() {
 
     detectHands();
     return () => cancelAnimationFrame(rafId);
-  }, [videoReady, handModelReady, detect, handData]);
+  }, [videoReady, handModelReady, detect]); // ✅ NO handData here!
+
+// ─── Separate effect to update UI state based on handData ───
+useEffect(() => {
+  if (handData.landmarks) {
+    setHandDetected(true);
+  } else {
+    setHandDetected(false);
+  }
+
+  if (handData.gesture === "PointerUp") {
+    setCurrentMode("PointerUp");
+  } else if (handData.gesture === "Erase") {
+    setCurrentMode("Erase");
+  } else {
+    setCurrentMode("Idle");
+  }
+}, [handData]); // ✅ This effect watches handData separately
 
   // ─── Clear only once per key press ───
   useEffect(() => {
@@ -327,6 +340,7 @@ export default function DrawVsAI() {
 
         {/* 2) (Optional) landmark-drawing canvas */}
         <canvas
+          id="landmark-canvas"
           ref={canvasRef}
           style={{
             position: "absolute",
@@ -340,17 +354,21 @@ export default function DrawVsAI() {
 
         {/* 3) drawing/erasing canvas */}
         <canvas
+          id="draw-canvas"
           ref={drawCanvasRef}
+          width={640}    // ✅ set actual internal resolution
+          height={480}   // ✅ set actual internal resolution
           style={{
             position: "absolute",
             top: 0,
             left: 0,
-            width: "100%",
+            width: "100%",   // style scaling
             height: "100%",
             zIndex: 3,
             cursor: "crosshair",
           }}
         />
+
 
         {/* 4) Overlays: hand status, mode, guess */}
         {!isLoading && (
@@ -413,15 +431,31 @@ export default function DrawVsAI() {
                   border: "1px solid #4b5563",
                 }}
               >
+                <p style={{
+                    fontFamily: "monospace",
+                    fontWeight: "bold",
+                    fontSize: 12,
+                    color: guessText.includes("…") ? "#9ca3af" : "#22c55e",
+                  }}>
+                    Draw: {targetWord}</p>
+                <p style={{
+                    fontFamily: "monospace",
+                    fontWeight: "bold",
+                    fontSize: 12,
+                    color: guessText.includes("…") ? "#9ca3af" : "#22c55e",
+                  }}>
+                    Score: {score}</p>
+                {correctGuess && <p>✅ Correct!</p>}
+
                 <p
                   style={{
                     fontFamily: "monospace",
                     fontWeight: "bold",
                     fontSize: 12,
-                    color: currentGuess.includes("…") ? "#9ca3af" : "#22c55e",
+                    color: guessText.includes("…") ? "#9ca3af" : "#22c55e",
                   }}
                 >
-                  {currentGuess}
+                  {guessText}
                 </p>
               </div>
             </div>
@@ -442,10 +476,10 @@ export default function DrawVsAI() {
             >
               <h3 style={{ fontWeight: "bold", marginBottom: 4 }}>GESTURES</h3>
               <p style={{ margin: 0 }}>
-                👆 Index Only = <span style={{ color: "#22c55e" }}>DRAW</span>
+                👆 Left Click or Index Only = <span style={{ color: "#22c55e" }}>DRAW</span>
               </p>
               <p style={{ margin: 0 }}>
-                🖱️ Left Click = <span style={{ color: "#facc15" }}>ERASE</span>
+                🖱️ Right Click = <span style={{ color: "#facc15" }}>ERASE</span>
               </p>
               <p style={{ margin: 0 }}>
                 ✋ Otherwise = <span style={{ color: "#fff" }}>IDLE</span>

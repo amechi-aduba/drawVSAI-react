@@ -1,33 +1,26 @@
-// src/capturehands/useDrawing.js
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useDrawingClassifier } from './useDrawingClassifier';
 
-import { useEffect, useRef, useState } from 'react';
-
-/**
- * useDrawing
- *
- * @param {object} args
- * @param {React.RefObject<HTMLCanvasElement>} args.drawCanvasRef – ref to overlay <canvas>
- * @param {Array|null} args.landmarks                               – array of 21 landmarks or null
- * @param {string|null} args.gesture                                – detected gesture from useHandTracking
- */
 function useDrawing({ drawCanvasRef, landmarks, gesture }) {
+  const clearOverlay = useCallback(() => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }, [drawCanvasRef]);
+
+  const { isModelReady, currentGuess, updateGuess, targetWord, score, correctGuess } = 
+    useDrawingClassifier({ onCorrect: clearOverlay });
+
   const prevPosRef = useRef({ x: -1, y: -1 });
-  const guessTimerRef = useRef(0);
-  const [currentGuess, setCurrentGuess] = useState('AI GUESSES: ...');
   const smoothingBufferRef = useRef([]);
   const SMOOTHING_BUFFER_SIZE = 3;
-  const MIN_DISTANCE = 2; // Minimum distance between points to draw
+  const MIN_DISTANCE = 2;
   const isErasingRef = useRef(false);
+  const isDrawingRef = useRef(false);
+  const lastGuessRef = useRef(0);
+  const GUESS_EVERY_MS = 350;
 
-  const mockPredictions = [
-    'CAT','DOG','HOUSE','CAR','TREE','FLOWER',
-    'BIRD','FISH','SUN','STAR','HEART','CIRCLE',
-    'SQUARE','TRIANGLE','FACE','APPLE'
-  ];
-  const getRandomPrediction = () =>
-    mockPredictions[Math.floor(Math.random() * mockPredictions.length)];
-
-  // Helper function to calculate average point from buffer
   const getAveragePoint = (points) => {
     if (points.length === 0) return null;
     const sum = points.reduce((acc, point) => ({
@@ -40,73 +33,158 @@ function useDrawing({ drawCanvasRef, landmarks, gesture }) {
     };
   };
 
-  // Helper function to calculate distance between points
   const getDistance = (p1, p2) => {
     return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
   };
 
-  // Mouse event handlers for erasing
+  const drawLine = (ctx, fromPoint, toPoint) => {
+    ctx.beginPath();
+    ctx.moveTo(fromPoint.x, fromPoint.y);
+    ctx.lineTo(toPoint.x, toPoint.y);
+    ctx.stroke();
+  };
+
+  // ✅ MOUSE DRAWING (FALLBACK)
   useEffect(() => {
     const canvas = drawCanvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      console.warn("❗ drawCanvasRef is null");
+      return;
+    }
+
+    if (canvas.id !== "draw-canvas") {
+      console.error("❌ Ref is not pointing to #draw-canvas:", canvas);
+      return;
+    }
+
+    console.log("✅ Drawing canvas confirmed:", canvas);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     const handleMouseDown = (e) => {
-      if (e.button === 0) { // Left click
+      if (e.button === 0) {
+        lastGuessRef.current = 0;
+        isDrawingRef.current = true;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        prevPosRef.current = { x, y };
+        smoothingBufferRef.current = [];
+      } else if (e.button === 2) {
         isErasingRef.current = true;
       }
     };
 
     const handleMouseUp = (e) => {
-      if (e.button === 0) { // Left click
+      if (e.button === 0) {
+        isDrawingRef.current = false;
+        if (isModelReady) {
+          updateGuess(canvas);
+        }
+      } else if (e.button === 2) {
         isErasingRef.current = false;
+        if (isModelReady) updateGuess(canvas);
       }
     };
 
     const handleMouseMove = (e) => {
-      if (!isErasingRef.current) return;
-      
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      
-      const ctx = canvas.getContext('2d');
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.beginPath();
-      ctx.arc(x, y, 25, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalCompositeOperation = 'source-over';
+
+      if (isDrawingRef.current) {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 10;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        const now = Date.now();
+        if (isModelReady && now - lastGuessRef.current > GUESS_EVERY_MS) {
+          lastGuessRef.current = now;
+          updateGuess(canvas);
+        }
+
+        smoothingBufferRef.current.push({ x, y });
+        if (smoothingBufferRef.current.length > SMOOTHING_BUFFER_SIZE) {
+          smoothingBufferRef.current.shift();
+        }
+
+        const smoothedPoint = getAveragePoint(smoothingBufferRef.current);
+        if (!smoothedPoint) return;
+
+        if (prevPosRef.current.x === -1) {
+          prevPosRef.current = smoothedPoint;
+          ctx.beginPath();
+          ctx.moveTo(smoothedPoint.x, smoothedPoint.y);
+          ctx.lineTo(smoothedPoint.x + 0.1, smoothedPoint.y + 0.1);
+          ctx.stroke();
+        } else {
+          const distance = getDistance(prevPosRef.current, smoothedPoint);
+          if (distance >= MIN_DISTANCE) {
+            drawLine(ctx, prevPosRef.current, smoothedPoint);
+            prevPosRef.current = smoothedPoint;
+          }
+        }
+      } else if (isErasingRef.current) {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.beginPath();
+        ctx.arc(x, y, 25, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+
+        const now = Date.now();
+        if (isModelReady && now - lastGuessRef.current > GUESS_EVERY_MS) {
+          lastGuessRef.current = now;
+          updateGuess(canvas);
+        }
+      }
+    };
+
+    const handleContextMenu = (e) => {
+      e.preventDefault();
     };
 
     canvas.addEventListener('mousedown', handleMouseDown);
     canvas.addEventListener('mouseup', handleMouseUp);
     canvas.addEventListener('mousemove', handleMouseMove);
+    canvas.addEventListener('contextmenu', handleContextMenu);
 
     return () => {
       canvas.removeEventListener('mousedown', handleMouseDown);
       canvas.removeEventListener('mouseup', handleMouseUp);
       canvas.removeEventListener('mousemove', handleMouseMove);
+      canvas.removeEventListener('contextmenu', handleContextMenu);
     };
-  }, [drawCanvasRef]);
+  }, [drawCanvasRef, isModelReady, updateGuess]);
 
+  // ✅ HAND TRACKING DRAWING (PRIMARY)
   useEffect(() => {
     const canvas = drawCanvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
+    // Reset when hand is idle or not detected
     if (!landmarks || gesture === "Idle") {
       prevPosRef.current = { x: -1, y: -1 };
       smoothingBufferRef.current = [];
       return;
     }
 
-    let rawTip, x, y;
+    let x, y;
 
     if (gesture === "PointerUp") {
-      // Use index tip for drawing
-      rawTip = landmarks[8]; // [xPx, yPx, z]
-      x = canvas.width - rawTip[0];
+      // Use index finger tip (landmark 8)
+      const rawTip = landmarks[8]; // [xPx, yPx, z]
+      x = canvas.width - rawTip[0];  // Mirror horizontally
       y = rawTip[1];
+
+      // Setup drawing style
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 10;  // Match mouse lineWidth
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
 
       // Add point to smoothing buffer
       smoothingBufferRef.current.push({ x, y });
@@ -118,57 +196,41 @@ function useDrawing({ drawCanvasRef, landmarks, gesture }) {
       const smoothedPoint = getAveragePoint(smoothingBufferRef.current);
       if (!smoothedPoint) return;
 
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 4;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-
+      // Draw line
       if (prevPosRef.current.x === -1) {
+        // First point
         prevPosRef.current = smoothedPoint;
         ctx.beginPath();
         ctx.moveTo(smoothedPoint.x, smoothedPoint.y);
         ctx.lineTo(smoothedPoint.x + 0.1, smoothedPoint.y + 0.1);
         ctx.stroke();
       } else {
-        // Only draw if distance is significant enough
+        // Draw if distance is significant
         const distance = getDistance(prevPosRef.current, smoothedPoint);
         if (distance >= MIN_DISTANCE) {
-          ctx.beginPath();
-          ctx.moveTo(prevPosRef.current.x, prevPosRef.current.y);
-          ctx.lineTo(smoothedPoint.x, smoothedPoint.y);
-          ctx.stroke();
+          drawLine(ctx, prevPosRef.current, smoothedPoint);
           prevPosRef.current = smoothedPoint;
         }
       }
 
-      guessTimerRef.current++;
-      if (guessTimerRef.current % 45 === 0) {
-        setCurrentGuess(`AI GUESSES: ${getRandomPrediction()}`);
+      // Update AI guess periodically
+      const now = Date.now();
+      if (isModelReady && now - lastGuessRef.current > GUESS_EVERY_MS) {
+        lastGuessRef.current = now;
+        updateGuess(canvas);
       }
-    }
-  }, [drawCanvasRef, landmarks, gesture]);
-
-  const clearOverlay = () => {
-    const canvas = drawCanvasRef.current;
-    if (!canvas) return;
-    
-    // Use requestAnimationFrame to prevent blocking
-    requestAnimationFrame(() => {
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      setCurrentGuess('Canvas cleared!');
-      setTimeout(() => {
-        setCurrentGuess('AI GUESSES: ...');
-      }, 2000);
+    } else {
+      // Non-PointerUp gestures: reset drawing state
       prevPosRef.current = { x: -1, y: -1 };
-      guessTimerRef.current = 0;
       smoothingBufferRef.current = [];
-    });
-  };
+    }
+  }, [drawCanvasRef, landmarks, gesture, isModelReady, updateGuess]);
 
   return {
     currentGuess,
+    targetWord,
+    score,
+    correctGuess,
     clearOverlay,
   };
 }

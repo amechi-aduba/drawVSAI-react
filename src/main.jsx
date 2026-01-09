@@ -7,8 +7,8 @@ import DrawVsAI from './drawVsAI.jsx'
 import SanityCheckWebcam from './webcamcheck.jsx'
 
 createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <App />
+ 
+    <App />,
     {/* <SanityCheckWebcam></SanityCheckWebcam> */}
-  </StrictMode>,
+  
 )
