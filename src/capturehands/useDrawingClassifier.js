@@ -111,11 +111,13 @@ export function useDrawingClassifier({ onCorrect } = {}) {
     const ctx = canvasEl.getContext("2d", { willReadFrequently: true });
     const data = ctx.getImageData(0, 0, W, H).data;
 
+    // 1. TIGHT CROP: Find boundaries of the ink
     let minX = W, minY = H, maxX = -1, maxY = -1;
     let hasInk = false;
 
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
+        // Look at alpha channel (index 3) or darkness
         const alpha = data[(y * W + x) * 4 + 3];
         if (alpha > 20) { 
           hasInk = true;
@@ -131,69 +133,89 @@ export function useDrawingClassifier({ onCorrect } = {}) {
       return { xImg: tf.zeros([1, 28, 28, 1], "float32"), inkRatio: 0 };
     }
 
-  
-    const bWidth = maxX - minX + 1;
-    const bHeight = maxY - minY + 1;
-    const maxDim = Math.max(bWidth, bHeight) * 1.15; 
+    // 2. LETTERBOXING: Preserve Aspect Ratio (Fixes "Banana" / "Squashed House")
+    const bW = maxX - minX + 1;
+    const bH = maxY - minY + 1;
+    
+    // Use the largest dimension for the square box, plus padding
+    const maxDim = Math.max(bW, bH);
+    const padding = maxDim * 0.2; // 20% padding
+    const size = maxDim + padding;
 
-    const tmpCanvas = document.createElement("canvas");
-    tmpCanvas.width = 28;
-    tmpCanvas.height = 28;
-    const tmpCtx = tmpCanvas.getContext("2d");
+    // Create intermediate canvas
+    const tmpC = document.createElement("canvas");
+    tmpC.width = 28;
+    tmpC.height = 28;
+    const tmpCtx = tmpC.getContext("2d");
 
+    // Fill with WHITE (255) - we will invert mathematically later
     tmpCtx.fillStyle = "white";
     tmpCtx.fillRect(0, 0, 28, 28);
 
-    const scale = 28 / maxDim;
-    const drawW = bWidth * scale;
-    const drawH = bHeight * scale;
-    const drawX = (28 - drawW) / 2;
-    const drawY = (28 - drawH) / 2;
+    // Center the drawing in the 28x28 box
+    const scale = 28 / size;
+    const dW = bW * scale;
+    const dH = bH * scale;
+    const dX = (28 - dW) / 2;
+    const dY = (28 - dH) / 2;
 
     tmpCtx.imageSmoothingEnabled = true;
-    tmpCtx.imageSmoothingQuality = 'high';
-    tmpCtx.drawImage(canvasEl, minX, minY, bWidth, bHeight, drawX, drawY, drawW, drawH);
+    tmpCtx.imageSmoothingQuality = "high";
+    tmpCtx.drawImage(canvasEl, minX, minY, bW, bH, dX, dY, dW, dH);
 
+    // 3. TENSOR CONVERSION: Exact Training Match (Fixes "Pizza")
     const imgData = tmpCtx.getImageData(0, 0, 28, 28).data;
     const floatArr = new Float32Array(28 * 28);
-    let inkCount = 0;
+    let inkPixels = 0;
 
     for (let i = 0; i < 28 * 28; i++) {
-      const avg = (imgData[i * 4] + imgData[i * 4 + 1] + imgData[i * 4 + 2]) / 3;
-      
-      let val = 1.0 - (avg / 255.0);
+      // Input is Black ink (0) on White bg (255)
+      const gray = imgData[i * 4]; // r=g=b
 
-      if (val > 0.05) {
-        val = Math.min(1.0, val * 1.3); 
-        inkCount++;
-      } else {
-        val = 0;
-      }
+      // NORMALIZE & INVERT: 
+      // Background (255) becomes 0.0
+      // Ink (0) becomes 1.0
+      let val = 1.0 - (gray / 255.0);
+
+      // CONTRAST BOOST: 
+      // Force faint gray edges (canvas anti-aliasing) to be solid ink
+      // This matches the "binary" nature of QuickDraw training data
+      if (val < 0.05) val = 0.0; // Clean noise
+      else val = Math.min(1.0, val * 1.5); // Boost ink
+
       floatArr[i] = val;
+      if (val > 0.1) inkPixels++;
     }
 
-    // if (SHOW_MODEL_VIEW) {
-    //   let debugC = document.getElementById("model-debug-preview");
-    //   if (!debugC) {
-    //     debugC = document.createElement("canvas");
-    //     debugC.id = "model-debug-preview";
-    //     debugC.width = 28;
-    //     debugC.height = 28;
-    //     debugC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#000;image-rendering:pixelated;";
-    //     document.body.appendChild(debugC);
-    //   }
-    //   const dCtx = debugC.getContext("2d");
-    //   const dImgData = dCtx.createImageData(28, 28);
-    //   for (let i = 0; i < 28 * 28; i++) {
-    //     const p = floatArr[i] * 255;
-    //     dImgData.data[i * 4] = p; dImgData.data[i * 4 + 1] = p; dImgData.data[i * 4 + 2] = p; dImgData.data[i * 4 + 3] = 255;
-    //   }
-    //   dCtx.putImageData(dImgData, 0, 0);
-    // }
+    // 4. DEBUG PREVIEW: Invert BACK for human eyes
+    // (Model sees White-on-Black, Human sees Black-on-White)
+    if (SHOW_MODEL_VIEW) {
+      let debugC = document.getElementById("model-debug-preview");
+      if (!debugC) {
+        debugC = document.createElement("canvas");
+        debugC.id = "model-debug-preview";
+        debugC.width = 28;
+        debugC.height = 28;
+        debugC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#fff;image-rendering:pixelated;";
+        document.body.appendChild(debugC);
+      }
+      const dCtx = debugC.getContext("2d");
+      const dImg = dCtx.createImageData(28, 28);
+      for (let i = 0; i < 28 * 28; i++) {
+        // Convert 1.0 (ink) -> 0 (black)
+        // Convert 0.0 (bg) -> 255 (white)
+        const p = (1.0 - floatArr[i]) * 255; 
+        dImg.data[i * 4] = p;
+        dImg.data[i * 4 + 1] = p;
+        dImg.data[i * 4 + 2] = p;
+        dImg.data[i * 4 + 3] = 255;
+      }
+      dCtx.putImageData(dImg, 0, 0);
+    }
 
     return {
       xImg: tf.tensor4d(floatArr, [1, 28, 28, 1], "float32"),
-      inkRatio: inkCount / (28 * 28),
+      inkRatio: inkPixels / (28 * 28),
     };
   }
 
