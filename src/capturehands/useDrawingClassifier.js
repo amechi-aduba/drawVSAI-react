@@ -262,20 +262,20 @@ export function useDrawingClassifier({ onCorrect } = {}) {
       arr[i] = 1.0 - arr[i];
     }
 
-    if (SHOW_MODEL_VIEW) {
-      const previewData = outCtx.createImageData(28, 28);
-      for (let i = 0; i < 28 * 28; i++) {
-        const px = arr[i] * 255;
-        previewData.data[i * 4] = px;
-        previewData.data[i * 4 + 1] = px;
-        previewData.data[i * 4 + 2] = px;
-        previewData.data[i * 4 + 3] = 255;
-      }
-      outCtx.putImageData(previewData, 0, 0);
-      outC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#fff;image-rendering:pixelated;";
-      document.body.appendChild(outC);
-      setTimeout(() => outC.remove(), 200);
-    }
+    // if (SHOW_MODEL_VIEW) {
+    //   const previewData = outCtx.createImageData(28, 28);
+    //   for (let i = 0; i < 28 * 28; i++) {
+    //     const px = arr[i] * 255;
+    //     previewData.data[i * 4] = px;
+    //     previewData.data[i * 4 + 1] = px;
+    //     previewData.data[i * 4 + 2] = px;
+    //     previewData.data[i * 4 + 3] = 255;
+    //   }
+    //   outCtx.putImageData(previewData, 0, 0);
+    //   outC.style.cssText = "position:fixed;right:10px;bottom:10px;width:140px;height:140px;z-index:9999;border:2px solid lime;background:#fff;image-rendering:pixelated;";
+    //   document.body.appendChild(outC);
+    //   setTimeout(() => outC.remove(), 200);
+    // }
 
     return {
       xImg: tf.tensor4d(arr, [1, 28, 28, 1], "float32"),
