@@ -221,8 +221,10 @@ function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
       }
     } else {
       // Non-PointerUp gestures: reset drawing state
-      prevPosRef.current = { x: -1, y: -1 };
-      smoothingBufferRef.current = [];
+        if (htr_on){
+          prevPosRef.current = { x: -1, y: -1 };
+          smoothingBufferRef.current = [];
+        }
     }
   }, [drawCanvasRef, landmarks, gesture, isModelReady, updateGuess]);
 
