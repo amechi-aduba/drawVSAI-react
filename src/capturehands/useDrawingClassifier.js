@@ -25,7 +25,7 @@ export function useDrawingClassifier({ onCorrect } = {}) {
   const correctStreakRef = useRef(0);
   const emaRef = useRef(null);
 
-  const STREAK_TO_SCORE = 3;
+  const STREAK_TO_SCORE = 1;
   const norm = (s) => (s ?? "").toLowerCase().trim();
 
   const onCorrectRef = useRef(null);
