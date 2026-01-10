@@ -2,17 +2,17 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import * as tf from "@tensorflow/tfjs";
 
 const CATEGORIES = [
-  "apple", "banana", "bicycle", "butterfly", "cactus", "cake",
-  "camera", "car", "chair", "cloud", "crab", "crown", "donut",
-  "door", "eye", "flower", "house", "ice cream", "key",
+  "apple", "banana", "bicycle", "butterfly", "cake",
+  "camera", "car", "chair", "crown", "donut",
+  "door", "flower", "house", "ice cream", "key",
   "lightning", "mountain", "pizza", "star"
 ];
 
 const LABELS_URL = `/model_js/labels.json?v=${Date.now()}`;
 const MODEL_URL = `/model_js/model.json?v=${Date.now()}`;
 
-const EMA_ALPHA = 0.8;
-const SHOW_MODEL_VIEW = true;
+const EMA_ALPHA = 0.3;
+const SHOW_MODEL_VIEW = false;
 
 export function useDrawingClassifier({ onCorrect } = {}) {
   const modelRef = useRef(null);
@@ -25,7 +25,7 @@ export function useDrawingClassifier({ onCorrect } = {}) {
   const correctStreakRef = useRef(0);
   const emaRef = useRef(null);
 
-  const STREAK_TO_SCORE = 1;
+  const STREAK_TO_SCORE = 2;
   const norm = (s) => (s ?? "").toLowerCase().trim();
 
   const onCorrectRef = useRef(null);
@@ -110,14 +110,11 @@ export function useDrawingClassifier({ onCorrect } = {}) {
     const H = canvasEl.height;
     const ctx = canvasEl.getContext("2d", { willReadFrequently: true });
     const data = ctx.getImageData(0, 0, W, H).data;
-
-    // 1. TIGHT CROP: Find boundaries of the ink
     let minX = W, minY = H, maxX = -1, maxY = -1;
     let hasInk = false;
 
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
-        // Look at alpha channel (index 3) or darkness
         const alpha = data[(y * W + x) * 4 + 3];
         if (alpha > 20) { 
           hasInk = true;
@@ -133,62 +130,52 @@ export function useDrawingClassifier({ onCorrect } = {}) {
       return { xImg: tf.zeros([1, 28, 28, 1], "float32"), inkRatio: 0 };
     }
 
-    // 2. LETTERBOXING: Preserve Aspect Ratio (Fixes "Banana" / "Squashed House")
     const bW = maxX - minX + 1;
     const bH = maxY - minY + 1;
-    
-    // Use the largest dimension for the square box, plus padding
     const maxDim = Math.max(bW, bH);
-    const padding = maxDim * 0.2; // 20% padding
+    const padding = maxDim * 0.2;
     const size = maxDim + padding;
 
-    // Create intermediate canvas
     const tmpC = document.createElement("canvas");
     tmpC.width = 28;
     tmpC.height = 28;
     const tmpCtx = tmpC.getContext("2d");
 
-    // Fill with WHITE (255) - we will invert mathematically later
     tmpCtx.fillStyle = "white";
     tmpCtx.fillRect(0, 0, 28, 28);
 
-    // Center the drawing in the 28x28 box
+    
     const scale = 28 / size;
     const dW = bW * scale;
     const dH = bH * scale;
     const dX = (28 - dW) / 2;
     const dY = (28 - dH) / 2;
 
-    tmpCtx.imageSmoothingEnabled = true;
-    tmpCtx.imageSmoothingQuality = "high";
+    tmpCtx.imageSmoothingEnabled = false;
     tmpCtx.drawImage(canvasEl, minX, minY, bW, bH, dX, dY, dW, dH);
 
-    // 3. TENSOR CONVERSION: Exact Training Match (Fixes "Pizza")
+    
     const imgData = tmpCtx.getImageData(0, 0, 28, 28).data;
     const floatArr = new Float32Array(28 * 28);
     let inkPixels = 0;
 
     for (let i = 0; i < 28 * 28; i++) {
-      // Input is Black ink (0) on White bg (255)
-      const gray = imgData[i * 4]; // r=g=b
+      
+      const gray = imgData[i * 4]; 
 
-      // NORMALIZE & INVERT: 
-      // Background (255) becomes 0.0
-      // Ink (0) becomes 1.0
+      
       let val = 1.0 - (gray / 255.0);
 
-      // CONTRAST BOOST: 
-      // Force faint gray edges (canvas anti-aliasing) to be solid ink
-      // This matches the "binary" nature of QuickDraw training data
-      if (val < 0.05) val = 0.0; // Clean noise
-      else val = Math.min(1.0, val * 1.5); // Boost ink
+      
+      if (val > 0.0) {
+        val = Math.min(1.0, val * 1.2);
+      }
 
       floatArr[i] = val;
-      if (val > 0.1) inkPixels++;
+      if (val > 0.05) inkPixels++;
     }
 
-    // 4. DEBUG PREVIEW: Invert BACK for human eyes
-    // (Model sees White-on-Black, Human sees Black-on-White)
+    
     if (SHOW_MODEL_VIEW) {
       let debugC = document.getElementById("model-debug-preview");
       if (!debugC) {
@@ -202,9 +189,7 @@ export function useDrawingClassifier({ onCorrect } = {}) {
       const dCtx = debugC.getContext("2d");
       const dImg = dCtx.createImageData(28, 28);
       for (let i = 0; i < 28 * 28; i++) {
-        // Convert 1.0 (ink) -> 0 (black)
-        // Convert 0.0 (bg) -> 255 (white)
-        const p = (1.0 - floatArr[i]) * 255; 
+        const p = floatArr[i] * 255;
         dImg.data[i * 4] = p;
         dImg.data[i * 4 + 1] = p;
         dImg.data[i * 4 + 2] = p;
@@ -236,7 +221,7 @@ export function useDrawingClassifier({ onCorrect } = {}) {
         xImg = pre.xImg;
         const inkRatio = pre.inkRatio;
 
-        if (inkRatio < 0.010) {
+        if (inkRatio < 0.008) {
           setCurrentGuess("AI GUESSES: …");
           return;
         }
@@ -246,14 +231,18 @@ export function useDrawingClassifier({ onCorrect } = {}) {
         const probs = Array.from(probsFlat);
 
         if (!emaRef.current || emaRef.current.length !== probs.length) {
-          emaRef.current = new Float32Array(probs.length);
+          emaRef.current = new Float32Array(probs);
+        } else {
+          const maxProb = Math.max(...probs);
+          const adaptiveAlpha = maxProb > 0.75 ? 0.5 : EMA_ALPHA;
+
+          const ema = emaRef.current;
+          for (let i = 0; i < probs.length; i++) {
+            ema[i] = adaptiveAlpha * ema[i] + (1 - adaptiveAlpha) * probs[i];
+          }
         }
 
         const ema = emaRef.current;
-        for (let i = 0; i < probs.length; i++) {
-          ema[i] = EMA_ALPHA * ema[i] + (1 - EMA_ALPHA) * probs[i];
-        }
-
         let bestIdx = 0;
         for (let i = 1; i < ema.length; i++) {
           if (ema[i] > ema[bestIdx]) bestIdx = i;
@@ -269,12 +258,6 @@ export function useDrawingClassifier({ onCorrect } = {}) {
         const topProb = ema[bestIdx];
         const margin = topProb - ema[secondIdx];
 
-        const rawTop3 = probs
-          .map((p, i) => ({ i, p }))
-          .sort((a, b) => b.p - a.p)
-          .slice(0, 3)
-          .map((t) => `${labels[t.i]}:${t.p.toFixed(2)}`);
-
         setCurrentGuess(`AI GUESSES: ${guessedWord}`);
 
         const guessIsTarget = norm(guessedWord) === norm(targetWordRef.current);
@@ -283,11 +266,13 @@ export function useDrawingClassifier({ onCorrect } = {}) {
           correctStreakRef.current += 1;
         } else {
           correctStreakRef.current = 0;
+          if (margin < 0.2) emaRef.current = null;
         }
-
         const shouldScore =
-          !hasScoredRef.current &&
-          correctStreakRef.current >= STREAK_TO_SCORE;
+          !hasScoredRef.current && (
+            correctStreakRef.current >= 2 ||
+            (guessIsTarget && topProb > 0.85 && margin > 0.3)
+          );
 
         if (shouldScore) {
           hasScoredRef.current = true;
@@ -302,7 +287,6 @@ export function useDrawingClassifier({ onCorrect } = {}) {
           onCorrectRef.current?.();
 
           setTimeout(() => startRound(), 800);
-
           return;
         }
 
@@ -311,7 +295,6 @@ export function useDrawingClassifier({ onCorrect } = {}) {
           prob: topProb.toFixed(3),
           margin: margin.toFixed(3),
           inkRatio: inkRatio.toFixed(4),
-          rawTop3,
           streak: correctStreakRef.current,
         });
 

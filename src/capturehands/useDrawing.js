@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useDrawingClassifier } from './useDrawingClassifier';
 
 function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
+  const ENABLE_HAND_TRACKING = false;
+
   const clearOverlay = useCallback(() => {
     const canvas = drawCanvasRef.current;
     if (!canvas) return;
@@ -44,31 +46,47 @@ function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
     ctx.stroke();
   };
 
-  // ✅ MOUSE DRAWING (FALLBACK)
+  // ✅ MOUSE DRAWING (FIXED)
   useEffect(() => {
     const canvas = drawCanvasRef.current;
     if (!canvas) {
-      console.warn("❗ drawCanvasRef is null");
+      console.warn("⚠ drawCanvasRef is null");
       return;
     }
 
     if (canvas.id !== "draw-canvas") {
-      console.error("❌ Ref is not pointing to #draw-canvas:", canvas);
+      console.error("✗ Ref is not pointing to #draw-canvas:", canvas);
       return;
     }
 
-    console.log("✅ Drawing canvas confirmed:", canvas);
+    console.log("✓ Drawing canvas confirmed:", canvas);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    // Set drawing context properties ONCE at setup
+    const setupDrawingContext = () => {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 10;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+    };
 
     const handleMouseDown = (e) => {
       if (e.button === 0) {
+        setupDrawingContext();
         lastGuessRef.current = 0;
         isDrawingRef.current = true;
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
         prevPosRef.current = { x, y };
-        smoothingBufferRef.current = [];
+        smoothingBufferRef.current = [{ x, y }];
+        
+        // Start path at first point
+        ctx.beginPath();
+        ctx.moveTo(x, y);
       } else if (e.button === 2) {
         isErasingRef.current = true;
       }
@@ -76,6 +94,7 @@ function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
 
     const handleMouseUp = (e) => {
       if (e.button === 0) {
+        ctx.stroke();  // Finalize the path
         isDrawingRef.current = false;
         if (isModelReady) {
           updateGuess(canvas);
@@ -92,11 +111,7 @@ function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
       const y = e.clientY - rect.top;
 
       if (isDrawingRef.current) {
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 10;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
+        setupDrawingContext();
 
         const now = Date.now();
         if (isModelReady && now - lastGuessRef.current > GUESS_EVERY_MS) {
@@ -104,24 +119,26 @@ function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
           updateGuess(canvas);
         }
 
+        // Add to smoothing buffer
         smoothingBufferRef.current.push({ x, y });
         if (smoothingBufferRef.current.length > SMOOTHING_BUFFER_SIZE) {
           smoothingBufferRef.current.shift();
         }
 
+        // Get smoothed point
         const smoothedPoint = getAveragePoint(smoothingBufferRef.current);
         if (!smoothedPoint) return;
 
+        // Only draw if we've moved far enough
         if (prevPosRef.current.x === -1) {
+          // First point - already moved with beginPath/moveTo in mouseDown
           prevPosRef.current = smoothedPoint;
-          ctx.beginPath();
-          ctx.moveTo(smoothedPoint.x, smoothedPoint.y);
-          ctx.lineTo(smoothedPoint.x + 0.1, smoothedPoint.y + 0.1);
-          ctx.stroke();
         } else {
           const distance = getDistance(prevPosRef.current, smoothedPoint);
           if (distance >= MIN_DISTANCE) {
-            drawLine(ctx, prevPosRef.current, smoothedPoint);
+            // Draw line and continue path
+            ctx.lineTo(smoothedPoint.x, smoothedPoint.y);
+            ctx.stroke();
             prevPosRef.current = smoothedPoint;
           }
         }
@@ -157,14 +174,16 @@ function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
     };
   }, [drawCanvasRef, isModelReady, updateGuess]);
 
-  // ✅ HAND TRACKING DRAWING (PRIMARY)
+  // ✅ HAND TRACKING DRAWING (minimal changes for consistency)
   useEffect(() => {
+    // ✅ Disable hand tracking if toggle is off
+    if (!ENABLE_HAND_TRACKING) return;
+
     const canvas = drawCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
-    // Reset when hand is idle or not detected
     if (!landmarks || gesture === "Idle") {
       prevPosRef.current = { x: -1, y: -1 };
       smoothingBufferRef.current = [];
@@ -174,57 +193,51 @@ function useDrawing({ drawCanvasRef, landmarks, gesture, htr_on}) {
     let x, y;
 
     if (gesture === "PointerUp" && htr_on) {
-      // Use index finger tip (landmark 8)
-      const rawTip = landmarks[8]; // [xPx, yPx, z]
-      x = canvas.width - rawTip[0];  // Mirror horizontally
+      const rawTip = landmarks[8];
+      x = canvas.width - rawTip[0];
       y = rawTip[1];
 
-      // Setup drawing style
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 10;  // Match mouse lineWidth
+      ctx.lineWidth = 10;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
 
-      // Add point to smoothing buffer
       smoothingBufferRef.current.push({ x, y });
       if (smoothingBufferRef.current.length > SMOOTHING_BUFFER_SIZE) {
         smoothingBufferRef.current.shift();
       }
 
-      // Get smoothed point
       const smoothedPoint = getAveragePoint(smoothingBufferRef.current);
       if (!smoothedPoint) return;
 
-      // Draw line
       if (prevPosRef.current.x === -1) {
-        // First point
         prevPosRef.current = smoothedPoint;
         ctx.beginPath();
         ctx.moveTo(smoothedPoint.x, smoothedPoint.y);
         ctx.lineTo(smoothedPoint.x + 0.1, smoothedPoint.y + 0.1);
         ctx.stroke();
       } else {
-        // Draw if distance is significant
         const distance = getDistance(prevPosRef.current, smoothedPoint);
         if (distance >= MIN_DISTANCE) {
-          drawLine(ctx, prevPosRef.current, smoothedPoint);
+          ctx.beginPath();
+          ctx.moveTo(prevPosRef.current.x, prevPosRef.current.y);
+          ctx.lineTo(smoothedPoint.x, smoothedPoint.y);
+          ctx.stroke();
           prevPosRef.current = smoothedPoint;
         }
       }
 
-      // Update AI guess periodically
       const now = Date.now();
       if (isModelReady && now - lastGuessRef.current > GUESS_EVERY_MS) {
         lastGuessRef.current = now;
         updateGuess(canvas);
       }
     } else {
-      // Non-PointerUp gestures: reset drawing state
-        if (htr_on){
-          prevPosRef.current = { x: -1, y: -1 };
-          smoothingBufferRef.current = [];
-        }
+      if (htr_on){
+        prevPosRef.current = { x: -1, y: -1 };
+        smoothingBufferRef.current = [];
+      }
     }
   }, [drawCanvasRef, landmarks, gesture, isModelReady, updateGuess]);
 
